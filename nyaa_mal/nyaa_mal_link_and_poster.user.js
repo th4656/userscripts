@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Nyaa MAL Link & Poster
 // @namespace    https://github.com/nyaa-mal-userscript
-// @version      1.1.0
+// @version      1.1.1
 // @description  Display MyAnimeList (MAL) links, anime poster, score, and metadata directly on Nyaa torrent pages.
 // @author       homura
 // @match        *://nyaa.si/view/*
@@ -127,6 +127,36 @@
     }
     .nyaa-mal-btn-mal:hover {
       background: #1c3773;
+    }
+
+    /* Dedicated MAL Metadata Row */
+    .nyaa-mal-row {
+      display: flex !important;
+      align-items: baseline;
+      flex-wrap: wrap;
+      padding: 3px 15px;
+      margin-left: -15px;
+      margin-right: -15px;
+      margin-top: 4px;
+      border-top: 1px dashed rgba(0, 0, 0, 0.08);
+      padding-top: 6px;
+    }
+    .nyaa-mal-label {
+      flex: 0 0 auto;
+      min-width: 105px;
+      color: inherit;
+      padding: 0;
+      margin: 0;
+      white-space: nowrap;
+    }
+    .nyaa-mal-value {
+      flex: 1 1 auto;
+      min-width: 0;
+      padding-left: 10px;
+      margin: 0;
+    }
+    body.dark .nyaa-mal-row {
+      border-top-color: rgba(255, 255, 255, 0.1);
     }
 
     /* Metadata row enhancements */
@@ -536,45 +566,20 @@
 
     panelBody.appendChild(flexWrapper);
 
-    // 4. Inject MAL metadata row into the metadata table
-    // Look for the "Info hash:" row (usually the last row)
-    const infoHashLabel = Array.from(metaCol.querySelectorAll('.row div')).find(
-      el => el.textContent.trim().toLowerCase() === 'info hash:'
-    );
+    // 4. Inject dedicated MAL metadata row into the metadata table
+    const malRow = document.createElement('div');
+    malRow.className = 'row nyaa-mal-row';
 
-    let malValueContainer = null;
-    let malLabelContainer = null;
+    const malLabelContainer = document.createElement('div');
+    malLabelContainer.className = 'nyaa-mal-label';
+    malLabelContainer.textContent = 'MyAnimeList:';
 
-    if (infoHashLabel) {
-      const infoHashRow = infoHashLabel.closest('.row');
-      // infoHashLabel had col-md-offset-6; remove offset so we can place MAL on the left
-      infoHashLabel.classList.remove('col-md-offset-6');
+    const malValueContainer = document.createElement('div');
+    malValueContainer.className = 'nyaa-mal-value';
 
-      malLabelContainer = document.createElement('div');
-      malLabelContainer.className = 'col-md-1';
-      malLabelContainer.textContent = 'MyAnimeList:';
-
-      malValueContainer = document.createElement('div');
-      malValueContainer.className = 'col-md-5';
-
-      infoHashRow.insertBefore(malValueContainer, infoHashLabel);
-      infoHashRow.insertBefore(malLabelContainer, malValueContainer);
-    } else {
-      // Fallback: create a new row at the bottom of metadata
-      const newRow = document.createElement('div');
-      newRow.className = 'row';
-
-      malLabelContainer = document.createElement('div');
-      malLabelContainer.className = 'col-md-1';
-      malLabelContainer.textContent = 'MyAnimeList:';
-
-      malValueContainer = document.createElement('div');
-      malValueContainer.className = 'col-md-11';
-
-      newRow.appendChild(malLabelContainer);
-      newRow.appendChild(malValueContainer);
-      metaCol.appendChild(newRow);
-    }
+    malRow.appendChild(malLabelContainer);
+    malRow.appendChild(malValueContainer);
+    metaCol.appendChild(malRow);
 
     // Set Initial Loading State
     malValueContainer.innerHTML = `
