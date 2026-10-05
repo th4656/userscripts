@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Nyaa MAL Link & Poster
 // @namespace    https://github.com/nyaa-mal-userscript
-// @version      1.1.1
+// @version      1.1.2
 // @description  Display MyAnimeList (MAL) links, anime poster, score, and metadata directly on Nyaa torrent pages.
 // @author       homura
 // @match        *://nyaa.si/view/*
@@ -314,26 +314,26 @@
 
   // --- Title Cleaning Logic ---
   function cleanAnimeTitle(rawTitle) {
-    if (!rawTitle) return '';
+    if (!rawTitle) return { main: '', alt: '' };
     let title = rawTitle.trim();
 
     // 1. Remove file extensions (.mkv, .mp4, etc.)
     title = title.replace(/\.(mkv|mp4|avi|flv|wmv|ts|m4v|webm)$/i, '');
 
-    // 2. Remove leading release group tags: e.g. [SubsPlease], (Ohys-Raws)
-    title = title.replace(/^(\[[^\]]+\]|\([^\)]+\))\s*/g, '');
+    // 2. Remove leading release group tags: e.g. [SubsPlease], (Ohys-Raws), 【Group】
+    title = title.replace(/^(?:\[[^\]]+\]|\([^\)]+\)|【[^】]+】|「[^」]+」)\s*/g, '');
 
     // 3. Remove checksums like [629EC3D9] or (629EC3D9)
-    title = title.replace(/[\[\(][0-9a-fA-F]{8}[\]\)]/g, '');
+    title = title.replace(/[\[\(\{][0-9a-fA-F]{8}[\]\)\}]/g, '');
 
-    // 4. Remove standard video/audio/release tags inside brackets or parentheses
+    // 4. Remove standard video/audio/release tags inside any brackets (including curly and mismatched)
     const bracketKeywords = (
       '1080p|720p|480p|2160p|4k|bd(?:rip)?|dvd(?:rip)?|bluray|blu-ray|web-?dl|webrip|hevc|x264|x265|av1|' +
       'h\\.?264|h\\.?265|10-?bit|8-?bit|flac|aac|opus|dual audio|multi-?audio|' +
-      'multiple subtitle|batch|remux|uncensored|censored|funi|cr|funidual|' +
-      'v\\d+|re-?upload|raw|sub(?:bed|s)?|dub(?:bed)?|(?:19|20)\\d{2}'
+      'multiple subtitle|multi-?subs?|batch|remux|uncensored|censored|funi|cr|funidual|' +
+      'v\\d+|re-?upload|raw|sub(?:bed|s)?|dub(?:bed)?|weekly|(?:19|20)\\d{2}'
     );
-    const bracketRegex = new RegExp(`[\\[\\(](?:${bracketKeywords})[^\\]\\)]*[\\]\\)]`, 'gi');
+    const bracketRegex = new RegExp(`[\\[\\(\\{【「](?:${bracketKeywords})[^\\]\\)\\}\\】」]*[\\]\\)\\}\\】」]`, 'gi');
     title = title.replace(bracketRegex, '');
 
     // 5. Remove unbracketed quality/audio tags commonly at the end
@@ -352,18 +352,29 @@
     // 7. Normalize standalone season abbreviation (e.g. S01 -> Season 1)
     title = title.replace(/\bS0?(\d+)\b/g, 'Season $1');
 
-    // 8. Clean any remaining bracketed tags at the end
-    while (/(\[[^\]]*\]|\([^\)]*\))\s*$/.test(title)) {
-      title = title.replace(/(\[[^\]]*\]|\([^\)]*\))\s*$/, '').trim();
+    // 8. Extract alternative title from brackets if present (e.g. {Even the Student Council Has Its Holes))
+    let altTitle = '';
+    const altMatch = title.match(/[\{\[\(]([^\}\]\)]+)[\}\]\)]/);
+    if (altMatch) {
+      const cand = altMatch[1].trim();
+      const kwRegex = new RegExp(`^(?:${bracketKeywords})$`, 'i');
+      if (cand.length > 3 && !kwRegex.test(cand)) {
+        altTitle = cand;
+      }
+      title = title.replace(/[\{\[\(][^\}\]\)]*[\}\]\)]/g, '');
     }
 
-    // 9. If no hyphenated episode was found and title ends in a standalone number (e.g. "Title 01")
-    // Keep it if preceded by Season, Part, Cour, Act, Vol
+    // 9. Clean any remaining bracketed tags
+    while (/([\[\(\{【][^\]\)\}】]*[\]\)\}】])\s*$/.test(title)) {
+      title = title.replace(/([\[\(\{【][^\]\)\}】]*[\]\)\}】])\s*$/, '').trim();
+    }
+
+    // 10. If no hyphenated episode was found and title ends in a standalone number (e.g. "Title 01")
     if (!hadHyphenEp) {
       title = title.replace(/(?<!\bSeason)(?<!\bPart)(?<!\bAct)(?<!\bCour)(?<!\bVol)(?<!\bVolume)\s+\d{1,3}(?:v\d+)?$/i, '');
     }
 
-    // 10. Clean trailing delimiters
+    // 11. Clean trailing delimiters
     title = title.replace(/[\s\-_.:]+$/, '');
 
     // Replace underscores if no space exists
@@ -371,7 +382,7 @@
       title = title.replace(/_/g, ' ');
     }
 
-    return title.trim();
+    return { main: title.trim(), alt: altTitle.trim() };
   }
 
   // --- Cache Helpers ---
@@ -402,21 +413,25 @@
 
   // --- MyAnimeList Query Services ---
   async function queryJikan(query, type) {
-    const url = `https://api.jikan.moe/v4/${type}?q=${encodeURIComponent(query)}&limit=1`;
-    const response = await fetchJson(url);
-    if (response && response.data && response.data.length > 0) {
-      const item = response.data[0];
-      return {
-        id: item.mal_id,
-        url: item.url,
-        title: item.title_english || item.title,
-        originalTitle: item.title,
-        poster: item.images?.jpg?.large_image_url || item.images?.webp?.large_image_url || item.images?.jpg?.image_url,
-        score: item.score || null,
-        type: item.type || null,
-        episodes: item.episodes || null,
-        status: item.status || null
-      };
+    try {
+      const url = `https://api.jikan.moe/v4/${type}?q=${encodeURIComponent(query)}&limit=1`;
+      const response = await fetchJson(url);
+      if (response && response.data && response.data.length > 0) {
+        const item = response.data[0];
+        return {
+          id: item.mal_id,
+          url: item.url,
+          title: item.title_english || item.title,
+          originalTitle: item.title,
+          poster: item.images?.jpg?.large_image_url || item.images?.webp?.large_image_url || item.images?.jpg?.image_url,
+          score: item.score || null,
+          type: item.type || null,
+          episodes: item.episodes || null,
+          status: item.status || null
+        };
+      }
+    } catch (e) {
+      // Jikan can be slow or blocked; catch gracefully without spamming console
     }
     return null;
   }
@@ -453,47 +468,43 @@
     return null;
   }
 
-  async function searchMAL(query, type = 'anime') {
-    // 1. Primary: Direct MAL search suggestions (typically responds in 50-150ms)
-    try {
-      const malResult = await queryMalPrefix(query, type);
-      if (malResult) return malResult;
-    } catch (e) {
-      console.warn('[Nyaa MAL] MAL prefix search failed:', e);
-    }
+  async function searchMAL(queryInput, type = 'anime') {
+    const mainQuery = typeof queryInput === 'string' ? queryInput : (queryInput.main || '');
+    const altQuery = typeof queryInput === 'object' ? (queryInput.alt || '') : '';
 
-    // 2. If query contains subtitle separator (e.g., "-"), try base title with MAL prefix
-    if (query.includes('-')) {
-      const baseQuery = query.split('-')[0].trim();
-      if (baseQuery && baseQuery.length > 2 && baseQuery !== query) {
-        try {
-          const fallbackResult = await queryMalPrefix(baseQuery, type);
-          if (fallbackResult) return fallbackResult;
-        } catch (e) {
-          // ignore
-        }
+    // Collect query candidates in priority order
+    const candidates = [];
+    if (mainQuery) candidates.push(mainQuery);
+    if (altQuery) candidates.push(altQuery);
+
+    // If mainQuery has a subtitle delimiter (e.g. "-", ":"), add base title
+    if (mainQuery.includes('-') || mainQuery.includes(':')) {
+      const base = mainQuery.split(/[-:]/)[0].trim();
+      if (base && base.length > 2 && !candidates.includes(base)) {
+        candidates.push(base);
       }
     }
 
-    // 3. Fallback: Jikan API v4 (if MAL prefix had no match or was blocked)
-    try {
-      const jikanResult = await queryJikan(query, type);
+    // Try without trailing exclamation marks or punctuation
+    const unpunct = mainQuery.replace(/[!?,.:]+$/, '').trim();
+    if (unpunct && !candidates.includes(unpunct)) {
+      candidates.push(unpunct);
+    }
+
+    // 1. Primary: Direct MAL search suggestions for all candidates (~50-150ms per request)
+    for (const q of candidates) {
+      try {
+        const malResult = await queryMalPrefix(q, type);
+        if (malResult) return malResult;
+      } catch (e) {
+        // Continue to next candidate
+      }
+    }
+
+    // 2. Fallback: Jikan API v4 (only if MAL prefix search found nothing)
+    for (const q of candidates.slice(0, 2)) {
+      const jikanResult = await queryJikan(q, type);
       if (jikanResult) return jikanResult;
-    } catch (e) {
-      console.warn('[Nyaa MAL] Jikan fallback failed:', e);
-    }
-
-    // 4. Secondary fallback on Jikan with base title
-    if (query.includes('-')) {
-      const baseQuery = query.split('-')[0].trim();
-      if (baseQuery && baseQuery.length > 2 && baseQuery !== query) {
-        try {
-          const fallbackResult = await queryJikan(baseQuery, type);
-          if (fallbackResult) return fallbackResult;
-        } catch (e) {
-          // ignore
-        }
-      }
     }
 
     return null;
@@ -534,7 +545,9 @@
 
     const rawTitle = titleEl.textContent.trim();
     const torrentId = window.location.pathname.replace(/\/view\/(\d+).*/, '$1');
-    const cleanedTitle = cleanAnimeTitle(rawTitle);
+    const titleInfo = cleanAnimeTitle(rawTitle);
+    const cleanedTitle = titleInfo.main;
+    const altTitle = titleInfo.alt;
 
     // 2. Identify Category (Anime vs Literature/Manga)
     const categoryLinks = Array.from(document.querySelectorAll('.panel .panel-body a[href*="?c="]'));
@@ -687,7 +700,7 @@
           const newQuery = input.value.trim();
           if (newQuery) {
             malValueContainer.innerHTML = `<span class="text-muted"><i class="fa fa-spinner fa-spin"></i> Searching MAL for <em>"${escapeHtml(newQuery)}"</em>...</span>`;
-            performSearch(newQuery, true);
+            performSearch(newQuery, '', true);
           }
         };
 
@@ -705,7 +718,7 @@
     }
 
     // 6. Perform Search with Caching
-    async function performSearch(query, forceRefresh = false) {
+    async function performSearch(query, altQuery = '', forceRefresh = false) {
       const cacheKey = `${torrentId}_${query}`;
       if (!forceRefresh) {
         const cached = getCachedResult(cacheKey);
@@ -716,7 +729,7 @@
       }
 
       try {
-        const animeData = await searchMAL(query, mediaType);
+        const animeData = await searchMAL({ main: query, alt: altQuery }, mediaType);
         if (animeData) {
           setCachedResult(cacheKey, animeData);
         }
@@ -728,7 +741,7 @@
     }
 
     // Run initial search
-    performSearch(cleanedTitle);
+    performSearch(cleanedTitle, altTitle);
   }
 
   // Escape HTML helper
