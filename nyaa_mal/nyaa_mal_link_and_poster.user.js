@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Nyaa MAL Link & Poster
 // @namespace    https://github.com/nyaa-mal-userscript
-// @version      1.0.0
+// @version      1.1.0
 // @description  Display MyAnimeList (MAL) links, anime poster, score, and metadata directly on Nyaa torrent pages.
 // @author       homura
 // @match        *://nyaa.si/view/*
@@ -14,7 +14,7 @@
 // @connect      api.jikan.moe
 // @connect      myanimelist.net
 // @connect      cdn.myanimelist.net
-// @run-at       document-end
+// @run-at       document-body
 // ==/UserScript==
 
 (function () {
@@ -234,7 +234,7 @@
   }
 
   // --- Network Request Helper ---
-  function fetchJson(url) {
+  function fetchJson(url, customHeaders = {}) {
     return new Promise((resolve, reject) => {
       const gmFetch = (typeof GM_xmlhttpRequest !== 'undefined') ? GM_xmlhttpRequest :
                       (typeof GM !== 'undefined' && GM.xmlHttpRequest) ? GM.xmlHttpRequest : null;
@@ -244,9 +244,10 @@
           method: 'GET',
           url: url,
           headers: {
-            'Accept': 'application/json, text/plain, */*'
+            'Accept': 'application/json, text/plain, */*',
+            ...customHeaders
           },
-          timeout: 10000,
+          timeout: 4000,
           onload: function (res) {
             if (res.status >= 200 && res.status < 300) {
               try {
@@ -267,8 +268,11 @@
           }
         });
       } else {
-        fetch(url)
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 4000);
+        fetch(url, { headers: customHeaders, signal: controller.signal })
           .then(res => {
+            clearTimeout(timer);
             if (!res.ok) throw new Error(`HTTP status ${res.status}`);
             return res.json();
           })
@@ -389,17 +393,25 @@
 
   async function queryMalPrefix(query, type) {
     const url = `https://myanimelist.net/search/prefix.json?type=${type}&keyword=${encodeURIComponent(query)}`;
-    const response = await fetchJson(url);
+    const response = await fetchJson(url, {
+      'Referer': 'https://myanimelist.net/',
+      'X-Requested-With': 'XMLHttpRequest'
+    });
     if (response && response.categories) {
       for (const cat of response.categories) {
         if (cat.items && cat.items.length > 0) {
           const item = cat.items[0];
+          // Upgrade thumbnail to full resolution by removing the resize segment (/r/100x140) and query parameters
+          let poster = item.image_url || '';
+          if (poster && poster.includes('/r/')) {
+            poster = poster.replace(/\/r\/\d+x\d+/, '').split('?')[0];
+          }
           return {
             id: item.id,
             url: item.url,
             title: item.name,
             originalTitle: item.name,
-            poster: item.image_url,
+            poster: poster,
             score: item.payload?.score ? parseFloat(item.payload.score) : null,
             type: item.payload?.media_type || null,
             episodes: null,
@@ -412,23 +424,36 @@
   }
 
   async function searchMAL(query, type = 'anime') {
-    // 1. Try Jikan API v4
-    try {
-      const jikanResult = await queryJikan(query, type);
-      if (jikanResult) return jikanResult;
-    } catch (e) {
-      console.warn('[Nyaa MAL] Jikan request failed:', e);
-    }
-
-    // 2. Fallback to MAL prefix search
+    // 1. Primary: Direct MAL search suggestions (typically responds in 50-150ms)
     try {
       const malResult = await queryMalPrefix(query, type);
       if (malResult) return malResult;
     } catch (e) {
-      console.warn('[Nyaa MAL] MAL prefix request failed:', e);
+      console.warn('[Nyaa MAL] MAL prefix search failed:', e);
     }
 
-    // 3. Fallback: if query contains subtitle separator (e.g., "-"), try base title
+    // 2. If query contains subtitle separator (e.g., "-"), try base title with MAL prefix
+    if (query.includes('-')) {
+      const baseQuery = query.split('-')[0].trim();
+      if (baseQuery && baseQuery.length > 2 && baseQuery !== query) {
+        try {
+          const fallbackResult = await queryMalPrefix(baseQuery, type);
+          if (fallbackResult) return fallbackResult;
+        } catch (e) {
+          // ignore
+        }
+      }
+    }
+
+    // 3. Fallback: Jikan API v4 (if MAL prefix had no match or was blocked)
+    try {
+      const jikanResult = await queryJikan(query, type);
+      if (jikanResult) return jikanResult;
+    } catch (e) {
+      console.warn('[Nyaa MAL] Jikan fallback failed:', e);
+    }
+
+    // 4. Secondary fallback on Jikan with base title
     if (query.includes('-')) {
       const baseQuery = query.split('-')[0].trim();
       if (baseQuery && baseQuery.length > 2 && baseQuery !== query) {
@@ -714,9 +739,25 @@
 
   // --- Bootstrap ---
   injectStyles();
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
-  } else {
-    init();
+
+  function tryInit() {
+    if (document.querySelector('.panel .panel-heading .panel-title')) {
+      init();
+      return true;
+    }
+    return false;
+  }
+
+  if (!tryInit()) {
+    const observer = new MutationObserver(() => {
+      if (tryInit()) {
+        observer.disconnect();
+      }
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    document.addEventListener('DOMContentLoaded', () => {
+      tryInit();
+      observer.disconnect();
+    });
   }
 })();
